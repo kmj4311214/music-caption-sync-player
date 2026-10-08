@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "node --experimental-strip-types --test tests/caption-sync.test.mjs tests/project-storage.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

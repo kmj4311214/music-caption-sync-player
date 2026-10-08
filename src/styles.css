@@ -185,6 +185,36 @@ h1 {
   gap: 14px;
 }
 
+.sync-mode {
+  display: flex;
+  gap: 0;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.sync-mode button {
+  min-height: 40px;
+  min-width: 108px;
+  padding: 8px 16px;
+  border: 0;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.sync-mode button[aria-pressed='true'] {
+  background: var(--gold);
+  color: #171006;
+}
+
+.sync-mode button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -3px;
+}
+
 .caption-stage {
   position: relative;
   display: grid;

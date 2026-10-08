@@ -37,5 +37,3 @@ export const supabase = isSupabaseConfigured
       },
     })
   : null;
-
-export const AUDIO_BUCKET = 'music-caption-audio';

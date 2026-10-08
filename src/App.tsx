@@ -24,7 +24,9 @@ import {
 } from 'lucide-react';
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AutoFitCaptionText } from './AutoFitCaptionText';
-import { AUDIO_BUCKET, isSupabaseConfigured, ownerKey, supabase } from './lib/supabase';
+import { isSupabaseConfigured, ownerKey, supabase } from './lib/supabase';
+import { closeCaption, replayCaptionIndex, roundTime, stampCaption } from './lib/captionSync';
+import { AUDIO_BUCKET, ensureAudioStored, errorMessage, MAX_AUDIO_BYTES } from './lib/projectStorage';
 import type { CaptionCue, ProjectRecord, SaveState } from './types';
 
 const initialText = `첫 번째 문장을 여기에 입력하세요.
@@ -35,6 +37,7 @@ type SyncSnapshot = {
   timings: Pick<CaptionCue, 'id' | 'start' | 'end'>[];
   displayIndex: number;
   recordingIndex: number | null;
+  mode: 'edit' | 'playback';
   time: number;
 };
 
@@ -67,8 +70,8 @@ const parseText = (text: string, previous: CaptionCue[] = []) => {
     return {
       id: old?.id ?? makeId(),
       text: line,
-      start: old?.start ?? index * 3,
-      end: old?.end ?? index * 3 + 2.8,
+      start: old?.start ?? 0,
+      end: old?.end ?? 0,
       note: old?.note ?? '',
     };
   });
@@ -85,6 +88,9 @@ const normalizeFileName = (name: string) =>
 function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const audioBlobRef = useRef<Blob | null>(null);
+  const projectTaskRef = useRef(false);
+  const revisionRef = useRef(0);
   const [title, setTitle] = useState('Jumprope Caption Session');
   const [artist, setArtist] = useState('');
   const [rawText, setRawText] = useState(initialText);
@@ -92,7 +98,6 @@ function App() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState('');
-  const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [audioName, setAudioName] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
@@ -104,8 +109,17 @@ function App() {
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [status, setStatus] = useState('');
   const [theater, setTheater] = useState(false);
+  const [mode, setMode] = useState<'edit' | 'playback'>('edit');
+  const [projectTask, setProjectTask] = useState<'save' | 'load' | 'delete' | null>(null);
 
-  const activeIndex = Math.min(displayIndex, Math.max(0, cues.length - 1));
+  const activeIndex = mode === 'playback'
+    ? replayCaptionIndex(cues, currentTime)
+    : Math.min(displayIndex, Math.max(0, cues.length - 1));
+  const isBusy = projectTask !== null;
+  const markDirty = useCallback(() => {
+    revisionRef.current += 1;
+    setSaveState('idle');
+  }, []);
 
   const activeCue = cues[activeIndex];
   const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
@@ -132,17 +146,19 @@ function App() {
     }
 
     setProjects((data ?? []) as ProjectRecord[]);
-  }, []);
+  }, [setStatus, setProjects]);
 
   const rememberSync = useCallback((rewindTime?: number) => {
+    const time = clampTime(rewindTime ?? audioRef.current?.currentTime ?? 0);
     const snapshot: SyncSnapshot = {
       timings: cues.map(({ id, start, end }) => ({ id, start, end })),
-      displayIndex,
+      displayIndex: mode === 'playback' ? replayCaptionIndex(cues, time) : displayIndex,
       recordingIndex,
-      time: clampTime(rewindTime ?? audioRef.current?.currentTime ?? 0),
+      mode,
+      time,
     };
     setSyncHistory((history) => [...history.slice(-99), snapshot]);
-  }, [cues, displayIndex, recordingIndex]);
+  }, [cues, displayIndex, recordingIndex, mode]);
 
   const stopSyncRecording = useCallback((time: number, captureHistory = true) => {
     if (recordingIndex === null) {
@@ -152,14 +168,11 @@ function App() {
     if (captureHistory) {
       rememberSync(cues[recordingIndex]?.start ?? time);
     }
-    const endTime = Number(clampTime(time).toFixed(3));
-    setCues((current) => current.map((cue, index) =>
-      index === recordingIndex && endTime > cue.start ? { ...cue, end: endTime } : cue,
-    ));
+    setCues((current) => closeCaption(current, recordingIndex, time));
     setRecordingIndex(null);
-    setSaveState('idle');
+    markDirty();
     setStatus('싱크 기록 완료');
-  }, [recordingIndex, cues, rememberSync]);
+  }, [recordingIndex, cues, rememberSync, markDirty, setStatus]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -231,7 +244,8 @@ function App() {
     setRecordingIndex(null);
     setDisplayIndex(0);
     setSyncHistory([]);
-    setSaveState('idle');
+    setMode('edit');
+    markDirty();
   };
 
   const handleAudioChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -239,12 +253,14 @@ function App() {
     if (!file) {
       return;
     }
-
-    if (audioUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(audioUrl);
+    event.target.value = '';
+    if (file.size > MAX_AUDIO_BYTES) {
+      setStatus('음원은 50MB 이하 파일을 선택해주세요. 기존 기록은 유지됩니다.');
+      return;
     }
 
-    setAudioFile(file);
+    audioRef.current?.pause();
+    audioBlobRef.current = file;
     setAudioName(file.name);
     setAudioPath(null);
     setAudioUrl(URL.createObjectURL(file));
@@ -255,7 +271,7 @@ function App() {
     setDisplayIndex(0);
     setSyncHistory([]);
     setStatus(`${file.name} 선택됨`);
-    setSaveState('idle');
+    markDirty();
   };
 
   const togglePlay = async () => {
@@ -294,7 +310,7 @@ function App() {
     setCues((current) =>
       current.map((cue, cueIndex) => (cueIndex === index ? { ...cue, ...patch } : cue)),
     );
-    setSaveState('idle');
+    markDirty();
   };
 
   const stampCue = (index: number, advance = false) => {
@@ -302,37 +318,23 @@ function App() {
     if (!audio || !audioUrl || !cues[index]) {
       return;
     }
-    const time = Number(clampTime(audio.currentTime).toFixed(3));
-    const previousStart = advance && index === 1 ? 0 : cues[index - 1]?.start;
-    if (previousStart !== undefined && time <= previousStart) {
-      setStatus('이전 자막의 시작 시간 이후에 찍어주세요.');
+    const time = roundTime(audio.currentTime);
+    let nextCues: CaptionCue[];
+    try {
+      nextCues = stampCaption(cues, index, time, advance);
+    } catch (error) {
+      setStatus(errorMessage(error));
       return;
     }
 
     rememberSync(advance ? cues[activeIndex]?.start ?? 0 : undefined);
-    setCues((current) =>
-      current.map((cue, cueIndex) => {
-        if (cueIndex === index) {
-          return {
-            ...cue,
-            start: time,
-            end: duration > time ? duration : time + 2.5,
-          };
-        }
-
-        if (cueIndex === index - 1) {
-          return { ...cue, start: previousStart ?? cue.start, end: time };
-        }
-
-        return cue;
-      }),
-    );
+    setCues(nextCues);
     setCurrentTime(time);
     if (advance) {
       setRecordingIndex(index);
       setDisplayIndex(index);
     }
-    setSaveState('idle');
+    markDirty();
     setStatus(`${index + 1}번 자막 ${formatTime(time)} 싱크 기록`);
   };
 
@@ -352,7 +354,7 @@ function App() {
   };
 
   const finishCue = () => {
-    const time = Number(clampTime(audioRef.current?.currentTime ?? currentTime).toFixed(3));
+    const time = roundTime(audioRef.current?.currentTime ?? currentTime);
     if (recordingIndex !== null) {
       stopSyncRecording(time);
       return;
@@ -361,12 +363,8 @@ function App() {
       return;
     }
     rememberSync();
-    setCues((current) =>
-      current.map((cue, index) => (
-        index === activeIndex && time > cue.start ? { ...cue, end: time } : cue
-      )),
-    );
-    setSaveState('idle');
+    setCues((current) => closeCaption(current, activeIndex, time));
+    markDirty();
     setStatus(`${activeIndex + 1}번 자막 끝 시간 기록`);
   };
 
@@ -395,11 +393,12 @@ function App() {
       return timing ? { ...cue, start: timing.start, end: timing.end } : cue;
     }));
     setDisplayIndex(snapshot.displayIndex);
+    setMode(snapshot.mode);
     setRecordingIndex(snapshot.recordingIndex);
     setCurrentTime(audio && audioUrl ? audio.currentTime : 0);
     setIsPlaying(false);
     setSyncHistory((history) => history.slice(0, -1));
-    setSaveState('idle');
+    markDirty();
     setStatus(`이전 싱크 취소: ${snapshot.displayIndex + 1}번 자막`);
   };
 
@@ -415,10 +414,11 @@ function App() {
     }
     setCues((current) => current.map((cue) => ({ ...cue, start: 0, end: 0 })));
     setDisplayIndex(0);
+    setMode('edit');
     setRecordingIndex(null);
     setCurrentTime(0);
     setIsPlaying(false);
-    setSaveState('idle');
+    markDirty();
     setStatus('전체 싱크 리셋 완료');
   };
 
@@ -434,7 +434,7 @@ function App() {
       })),
     );
     setRecordingIndex(null);
-    setSaveState('idle');
+    markDirty();
   };
 
   const shiftCues = (delta: number) => {
@@ -446,53 +446,45 @@ function App() {
         end: clampTime(cue.end + delta),
       })),
     );
-    setSaveState('idle');
-  };
-
-  const uploadAudio = async () => {
-    if (!supabase || !audioFile) {
-      return audioPath;
-    }
-
-    const safeName = normalizeFileName(audioFile.name) || `audio-${Date.now()}`;
-    const path = `${ownerKey}/${makeId()}-${safeName}`;
-    const { error } = await supabase.storage.from(AUDIO_BUCKET).upload(path, audioFile, {
-      cacheControl: '3600',
-      contentType: audioFile.type || 'audio/mpeg',
-      upsert: false,
-    });
-
-    if (error) {
-      throw error;
-    }
-
-    setAudioPath(path);
-    return path;
+    markDirty();
   };
 
   const saveProject = async () => {
+    if (projectTaskRef.current) {
+      return;
+    }
     if (!supabase) {
       setStatus('Supabase 환경변수가 필요합니다.');
       setSaveState('error');
       return;
     }
 
+    projectTaskRef.current = true;
+    setProjectTask('save');
+    const savedRevision = revisionRef.current;
+    const projectId = activeProjectId ?? makeId();
+    const savedCues = closeCaption(cues, recordingIndex, audioRef.current?.currentTime ?? currentTime);
+    setActiveProjectId(projectId);
+    setCues(savedCues);
     setSaveState('saving');
     setStatus('저장 중');
 
     try {
-      const uploadedPath = await uploadAudio();
+      const uploadedPath = await ensureAudioStored(supabase, {
+        owner: ownerKey, path: audioPath, source: audioBlobRef.current, name: audioName, makeId,
+      });
+      setAudioPath(uploadedPath);
       const payload = {
-        id: activeProjectId ?? undefined,
+        id: projectId,
         owner_key: ownerKey,
         title: title.trim() || 'Untitled Session',
         artist: artist.trim() || null,
         audio_path: uploadedPath,
         audio_name: audioName,
-        duration,
+        duration: roundTime(duration),
         raw_text: rawText,
-        cues,
-        notes: cues.reduce<Record<string, string>>((memo, cue) => {
+        cues: savedCues,
+        notes: savedCues.reduce<Record<string, string>>((memo, cue) => {
           if (cue.note.trim()) {
             memo[cue.id] = cue.note;
           }
@@ -517,23 +509,33 @@ function App() {
         const others = current.filter((project) => project.id !== saved.id);
         return [saved, ...others];
       });
-      setSaveState('saved');
-      setStatus('Supabase 저장 완료');
-      setAudioFile(null);
+      const unchanged = revisionRef.current === savedRevision;
+      setSaveState(unchanged ? 'saved' : 'idle');
+      setStatus(unchanged ? 'Supabase 저장 완료' : '구간 저장 완료 · 이후 변경 사항은 다시 저장해주세요.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : '알 수 없는 오류';
-      setStatus(`저장 실패: ${message}`);
+      setStatus(`저장 실패: ${errorMessage(error)}`);
       setSaveState('error');
+    } finally {
+      projectTaskRef.current = false;
+      setProjectTask(null);
     }
   };
 
   const loadProject = async (project: ProjectRecord) => {
+    if (projectTaskRef.current) {
+      return;
+    }
+    projectTaskRef.current = true;
+    setProjectTask('load');
     audioRef.current?.pause();
+    audioBlobRef.current = null;
+    setAudioUrl('');
+    setIsPlaying(false);
     setRecordingIndex(null);
     setDisplayIndex(0);
     setSyncHistory([]);
     setCurrentTime(0);
-    setAudioFile(null);
+    setMode('playback');
     setActiveProjectId(project.id);
     setTitle(project.title);
     setArtist(project.artist ?? '');
@@ -543,65 +545,107 @@ function App() {
     setAudioName(project.audio_name);
     setDuration(Number(project.duration ?? 0));
     setSaveState('saved');
-    setStatus(`${project.title} 불러옴`);
+    setStatus('프로젝트 불러오는 중');
 
-    if (!supabase || !project.audio_path) {
-      setAudioUrl('');
-      return;
+    try {
+      if (!supabase || !project.audio_path) {
+        setStatus(project.audio_name ? '연결된 음원이 없습니다. 원래 음원을 다시 선택하고 저장해주세요.' : `${project.title} 불러옴`);
+        return;
+      }
+      const { data, error } = await supabase.storage.from(AUDIO_BUCKET).download(project.audio_path);
+      if (error) {
+        throw error;
+      }
+      audioBlobRef.current = data;
+      setAudioUrl(URL.createObjectURL(data));
+      setStatus(`${project.title} 불러옴`);
+    } catch (error) {
+      setSaveState('error');
+      setStatus(`음원 불러오기 실패: ${errorMessage(error)}. 원래 음원을 다시 선택하면 자막 기록을 유지하고 복구할 수 있습니다.`);
+    } finally {
+      projectTaskRef.current = false;
+      setProjectTask(null);
     }
-
-    const { data, error } = await supabase.storage.from(AUDIO_BUCKET).download(project.audio_path);
-    if (error) {
-      setStatus(`오디오 불러오기 실패: ${error.message}`);
-      setAudioUrl('');
-      return;
-    }
-
-    if (audioUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(audioUrl);
-    }
-    setAudioUrl(URL.createObjectURL(data));
   };
 
   const deleteProject = async (project: ProjectRecord) => {
-    if (!supabase || !window.confirm(`${project.title} 삭제할까요?`)) {
+    if (projectTaskRef.current || !supabase || !window.confirm(`${project.title} 삭제할까요?`)) {
       return;
     }
-
-    const { error } = await supabase.from('music_caption_projects').delete().eq('id', project.id);
-    if (error) {
-      setStatus(`삭제 실패: ${error.message}`);
-      return;
+    projectTaskRef.current = true;
+    setProjectTask('delete');
+    try {
+      const { error } = await supabase.from('music_caption_projects').delete().eq('id', project.id);
+      if (error) {
+        throw error;
+      }
+      setProjects((current) => current.filter((item) => item.id !== project.id));
+      if (activeProjectId === project.id) {
+        setActiveProjectId(null);
+        setAudioPath(null);
+        markDirty();
+      }
+      if (project.audio_path) {
+        const { data: references, error: referenceError } = await supabase
+          .from('music_caption_projects').select('id').eq('audio_path', project.audio_path).limit(1);
+        if (referenceError) {
+          throw referenceError;
+        }
+        if (!references?.length) {
+          const { error: audioError } = await supabase.storage.from(AUDIO_BUCKET).remove([project.audio_path]);
+          if (audioError) {
+            throw audioError;
+          }
+        }
+      }
+      setStatus('삭제 완료');
+    } catch (error) {
+      setStatus(`삭제 처리 오류: ${errorMessage(error)}`);
+    } finally {
+      projectTaskRef.current = false;
+      setProjectTask(null);
     }
-
-    if (project.audio_path) {
-      await supabase.storage.from(AUDIO_BUCKET).remove([project.audio_path]);
-    }
-
-    setProjects((current) => current.filter((item) => item.id !== project.id));
-    if (activeProjectId === project.id) {
-      setActiveProjectId(null);
-    }
-    setStatus('삭제 완료');
   };
 
   const newProject = () => {
+    if (projectTaskRef.current) {
+      return;
+    }
+    audioRef.current?.pause();
+    audioBlobRef.current = null;
     setActiveProjectId(null);
     setTitle('Jumprope Caption Session');
     setArtist('');
     setRawText(initialText);
     setCues(parseText(initialText));
-    setAudioFile(null);
     setAudioPath(null);
     setAudioName(null);
     setAudioUrl('');
     setDuration(0);
     setCurrentTime(0);
+    setIsPlaying(false);
+    setMode('edit');
     setDisplayIndex(0);
     setRecordingIndex(null);
     setSyncHistory([]);
-    setSaveState('idle');
+    markDirty();
     setStatus('새 프로젝트');
+  };
+
+  const switchMode = (nextMode: 'edit' | 'playback') => {
+    if (mode === nextMode) {
+      return;
+    }
+    const audio = audioRef.current;
+    const time = audio?.currentTime ?? currentTime;
+    audio?.pause();
+    if (recordingIndex !== null) {
+      stopSyncRecording(time);
+    }
+    setDisplayIndex(nextMode === 'edit' ? activeIndex : 0);
+    setMode(nextMode);
+    setIsPlaying(false);
+    setCurrentTime(time);
   };
 
   const downloadJson = () => {
@@ -632,7 +676,7 @@ function App() {
   };
 
   const saveButtonLabel =
-    saveState === 'saving' ? '저장 중' : saveState === 'saved' ? '저장됨' : '저장';
+    projectTask === 'save' ? '저장 중' : saveState === 'saved' ? '저장됨' : '저장';
 
   return (
     <main className={theater ? 'app theater' : 'app'}>
@@ -642,10 +686,10 @@ function App() {
           <h1>Caption Sync Player</h1>
         </div>
         <div className="topbar-actions">
-          <button className="icon-button" type="button" onClick={newProject} title="새 프로젝트">
+          <button className="icon-button" type="button" onClick={newProject} title="새 프로젝트" disabled={isBusy}>
             <Plus size={19} />
           </button>
-          <button className="gold-button" type="button" onClick={saveProject} disabled={saveState === 'saving'}>
+          <button className="gold-button" type="button" onClick={saveProject} disabled={isBusy}>
             {saveState === 'saved' ? <BadgeCheck size={18} /> : <Save size={18} />}
             {saveButtonLabel}
           </button>
@@ -664,7 +708,7 @@ function App() {
                 className={project.id === activeProjectId ? 'project-card active' : 'project-card'}
                 key={project.id}
               >
-                <button type="button" onClick={() => void loadProject(project)}>
+                <button type="button" onClick={() => void loadProject(project)} disabled={isBusy}>
                   <strong>{project.title}</strong>
                   <span>{project.audio_name ?? '오디오 없음'}</span>
                 </button>
@@ -673,6 +717,7 @@ function App() {
                   type="button"
                   onClick={() => void deleteProject(project)}
                   title="삭제"
+                  disabled={isBusy}
                 >
                   <Trash2 size={16} />
                 </button>
@@ -680,14 +725,18 @@ function App() {
             ))}
             {projects.length === 0 && <div className="empty">저장된 항목 없음</div>}
           </div>
-          <div className="status-line">{isSupabaseConfigured ? status || '연결됨' : '환경변수 필요'}</div>
+          <div className="status-line" role="status">{isSupabaseConfigured ? status || '연결됨' : '환경변수 필요'}</div>
         </aside>
 
         <section className="stage-column">
+          <div className="sync-mode" role="group" aria-label="싱크 모드">
+            <button type="button" aria-pressed={mode === 'edit'} onClick={() => switchMode('edit')} disabled={projectTask === 'load'}>싱크 편집</button>
+            <button type="button" aria-pressed={mode === 'playback'} onClick={() => switchMode('playback')} disabled={projectTask === 'load'}>싱크 재생</button>
+          </div>
           <div className="caption-stage">
             <div className="stage-meta">
               <span>{formatTime(currentTime)}</span>
-              <span className="recording-label">{recordingIndex !== null ? '기록 중' : '자막'} {cues.length ? activeIndex + 1 : 0}/{cues.length}</span>
+              <span className="recording-label">{mode === 'playback' ? '싱크 재생' : recordingIndex !== null ? '기록 중' : '자막'} {cues.length ? activeIndex + 1 : 0}/{cues.length}</span>
               <span>{formatTime(duration)}</span>
             </div>
             <div className="caption-stack">
@@ -714,11 +763,11 @@ function App() {
               accept="audio/*"
               onChange={handleAudioChange}
             />
-            <button className="tool-button" type="button" onClick={() => fileInputRef.current?.click()}>
+            <button className="tool-button" type="button" onClick={() => fileInputRef.current?.click()} disabled={isBusy}>
               <FileAudio size={18} />
               오디오
             </button>
-            <button className="play-button" type="button" onClick={() => void togglePlay()} title={isPlaying ? '일시정지' : '재생'}>
+            <button className="play-button" type="button" onClick={() => void togglePlay()} title={isPlaying ? '일시정지' : '재생'} disabled={projectTask === 'load'}>
               {isPlaying ? <Pause size={24} /> : <Play size={24} />}
             </button>
             <input
@@ -738,11 +787,11 @@ function App() {
           </div>
 
           <div className="live-sync-controls">
-            <button className="gold-button" type="button" onClick={stampNext} disabled={!nextCue}>
+            <button className="gold-button" type="button" onClick={stampNext} disabled={!nextCue || mode !== 'edit' || projectTask === 'load'}>
               <SkipForward size={18} />
               싱크 찍기
             </button>
-            <button className="tool-button" type="button" onClick={finishCue} disabled={!audioUrl || !activeCue}>
+            <button className="tool-button" type="button" onClick={finishCue} disabled={!audioUrl || !activeCue || mode !== 'edit' || projectTask === 'load'}>
               <Square size={16} />
               싱크 종료
             </button>
@@ -761,7 +810,11 @@ function App() {
             </div>
           </div>
 
-          <audio ref={audioRef} src={audioUrl} preload="metadata" />
+          <audio ref={audioRef} src={audioUrl || undefined} preload="metadata" onError={() => {
+            if (audioUrl) {
+              setStatus('음원을 재생할 수 없습니다. 원래 음원을 다시 선택해주세요. 자막 기록은 유지됩니다.');
+            }
+          }} />
 
           <div className="metrics">
             <div>
@@ -791,11 +844,11 @@ function App() {
           <div className="identity-row">
             <label>
               <span>제목</span>
-              <input value={title} onChange={(event) => setTitle(event.target.value)} />
+              <input value={title} onChange={(event) => { setTitle(event.target.value); markDirty(); }} />
             </label>
             <label>
               <span>아티스트</span>
-              <input value={artist} onChange={(event) => setArtist(event.target.value)} />
+              <input value={artist} onChange={(event) => { setArtist(event.target.value); markDirty(); }} />
             </label>
           </div>
 
@@ -805,7 +858,7 @@ function App() {
           </label>
 
           <div className="sync-toolbar">
-            <button className="tool-button" type="button" onClick={finishCue}>
+            <button className="tool-button" type="button" onClick={finishCue} disabled={mode !== 'edit' || !audioUrl || projectTask === 'load'}>
               <SkipForward size={18} />
               끝점
             </button>
