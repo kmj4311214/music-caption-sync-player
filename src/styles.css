@@ -518,6 +518,9 @@ input {
 }
 
 .cue-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   height: 42px;
   border-radius: 8px;
   background: rgba(215, 170, 72, 0.15);
