@@ -1,7 +1,6 @@
 import {
   AlignLeft,
   BadgeCheck,
-  ChevronRight,
   Clock3,
   Download,
   FileAudio,
@@ -15,6 +14,7 @@ import {
   Save,
   ScissorsLineDashed,
   SkipForward,
+  Square,
   Trash2,
   UploadCloud,
   WandSparkles,
@@ -89,26 +89,40 @@ function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [syncIndex, setSyncIndex] = useState(0);
+  const [recordingIndex, setRecordingIndex] = useState<number | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [status, setStatus] = useState('');
   const [theater, setTheater] = useState(false);
 
   const activeIndex = useMemo(() => {
-    const found = cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end);
-    if (found >= 0) {
-      return found;
+    if (recordingIndex !== null && cues[recordingIndex]) {
+      return recordingIndex;
     }
 
-    return cues.reduce((closest, cue, index) => {
-      const previousDistance = Math.abs((cues[closest]?.start ?? 0) - currentTime);
-      const nextDistance = Math.abs(cue.start - currentTime);
-      return nextDistance < previousDistance ? index : closest;
-    }, 0);
-  }, [cues, currentTime]);
+    const playingIndex = cues.reduce((latest, cue, index) => {
+      if (currentTime >= cue.start && currentTime < cue.end &&
+          (latest < 0 || cue.start >= cues[latest].start)) {
+        return index;
+      }
+      return latest;
+    }, -1);
+    if (playingIndex >= 0) {
+      return playingIndex;
+    }
+
+    const previousIndex = cues.reduce((latest, cue, index) => {
+      if (cue.start <= currentTime && (latest < 0 || cue.start >= cues[latest].start)) {
+        return index;
+      }
+      return latest;
+    }, -1);
+    return Math.max(0, previousIndex);
+  }, [cues, currentTime, recordingIndex]);
 
   const activeCue = cues[activeIndex];
   const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
   const completedLines = cues.filter((cue) => cue.end > cue.start).length;
+  const nextCue = cues[syncIndex];
   const totalWords = useMemo(
     () => rawText.split(/\s+/).filter(Boolean).length,
     [rawText],
@@ -132,16 +146,46 @@ function App() {
     setProjects((data ?? []) as ProjectRecord[]);
   }, []);
 
+  const stopSyncRecording = useCallback((time: number) => {
+    if (recordingIndex === null) {
+      return;
+    }
+
+    const endTime = Number(clampTime(time).toFixed(3));
+    setCues((current) => current.map((cue, index) =>
+      index === recordingIndex && endTime > cue.start ? { ...cue, end: endTime } : cue,
+    ));
+    setRecordingIndex(null);
+    setSyncIndex((index) => index >= cues.length ? 0 : index);
+    setSaveState('idle');
+    setStatus('싱크 기록 완료');
+  }, [recordingIndex, cues.length]);
+
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) {
       return;
     }
 
+    let frame = 0;
     const updateTime = () => setCurrentTime(audio.currentTime);
-    const updateDuration = () => setDuration(audio.duration || 0);
-    const updatePlaying = () => setIsPlaying(!audio.paused);
-    const updatePaused = () => setIsPlaying(false);
+    const updateDuration = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+    const tick = () => {
+      updateTime();
+      if (!audio.paused && !audio.ended) {
+        frame = requestAnimationFrame(tick);
+      }
+    };
+    const updatePlaying = () => {
+      setIsPlaying(true);
+      cancelAnimationFrame(frame);
+      tick();
+    };
+    const updatePaused = () => {
+      setIsPlaying(false);
+      cancelAnimationFrame(frame);
+      updateTime();
+    };
 
     audio.addEventListener('timeupdate', updateTime);
     audio.addEventListener('loadedmetadata', updateDuration);
@@ -150,6 +194,7 @@ function App() {
     audio.addEventListener('ended', updatePaused);
 
     return () => {
+      cancelAnimationFrame(frame);
       audio.removeEventListener('timeupdate', updateTime);
       audio.removeEventListener('loadedmetadata', updateDuration);
       audio.removeEventListener('play', updatePlaying);
@@ -157,6 +202,16 @@ function App() {
       audio.removeEventListener('ended', updatePaused);
     };
   }, [audioUrl]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+    const finishRecording = () => stopSyncRecording(audio.currentTime);
+    audio.addEventListener('ended', finishRecording);
+    return () => audio.removeEventListener('ended', finishRecording);
+  }, [audioUrl, stopSyncRecording]);
 
   useEffect(() => {
     return () => {
@@ -173,6 +228,8 @@ function App() {
   const handleTextChange = (value: string) => {
     setRawText(value);
     setCues((current) => parseText(value, current));
+    setRecordingIndex(null);
+    setSyncIndex(0);
     setSaveState('idle');
   };
 
@@ -190,6 +247,11 @@ function App() {
     setAudioName(file.name);
     setAudioPath(null);
     setAudioUrl(URL.createObjectURL(file));
+    setCurrentTime(0);
+    setDuration(0);
+    setIsPlaying(false);
+    setRecordingIndex(null);
+    setSyncIndex(0);
     setStatus(`${file.name} 선택됨`);
     setSaveState('idle');
   };
@@ -202,7 +264,11 @@ function App() {
     }
 
     if (audio.paused) {
-      await audio.play();
+      try {
+        await audio.play();
+      } catch {
+        setStatus('음원을 재생할 수 없습니다. 다른 오디오 파일을 선택해주세요.');
+      }
     } else {
       audio.pause();
     }
@@ -210,10 +276,11 @@ function App() {
 
   const seekTo = (value: number) => {
     const audio = audioRef.current;
-    if (!audio) {
+    if (!audio || !audioUrl) {
       return;
     }
 
+    setRecordingIndex(null);
     audio.currentTime = clampTime(value);
     setCurrentTime(audio.currentTime);
   };
@@ -226,36 +293,63 @@ function App() {
   };
 
   const stampCue = (index: number) => {
-    const time = currentTime;
+    const audio = audioRef.current;
+    if (!audio || !audioUrl || !cues[index]) {
+      return;
+    }
+    const time = Number(clampTime(audio.currentTime).toFixed(3));
+    if (index > 0 && time <= cues[index - 1].start) {
+      setStatus('이전 자막의 시작 시간 이후에 찍어주세요.');
+      return;
+    }
+
     setCues((current) =>
       current.map((cue, cueIndex) => {
         if (cueIndex === index) {
-          const nextStart = current[cueIndex + 1]?.start;
           return {
             ...cue,
             start: time,
-            end: nextStart && nextStart > time ? nextStart : time + 2.5,
+            end: duration > time ? duration : time + 2.5,
           };
         }
 
         if (cueIndex === index - 1) {
-          return { ...cue, end: Math.max(cue.start + 0.1, time) };
+          return { ...cue, end: time };
         }
 
         return cue;
       }),
     );
-    setSyncIndex(Math.min(index + 1, cues.length - 1));
+    setCurrentTime(time);
+    setRecordingIndex(index);
+    setSyncIndex(index + 1);
     setSaveState('idle');
+    setStatus(`${index + 1}번 자막 ${formatTime(time)} 싱크 기록`);
   };
 
   const stampNext = () => {
+    const audio = audioRef.current;
+    if (!audio || !audioUrl) {
+      setStatus('먼저 음원을 선택해주세요.');
+      return;
+    }
+    if (audio.paused) {
+      setStatus('음원을 재생한 뒤 싱크를 찍어주세요.');
+      return;
+    }
     stampCue(syncIndex);
   };
 
   const finishCue = () => {
+    const time = Number(clampTime(audioRef.current?.currentTime ?? currentTime).toFixed(3));
+    if (recordingIndex !== null) {
+      stopSyncRecording(time);
+      return;
+    }
     setCues((current) =>
-      current.map((cue, index) => (index === syncIndex ? { ...cue, end: currentTime } : cue)),
+      current.map((cue, index) => (
+        index === syncIndex && time > cue.start ? { ...cue, end: time } : cue
+      )),
     );
     setSyncIndex((index) => Math.min(index + 1, cues.length - 1));
     setSaveState('idle');
@@ -272,6 +366,7 @@ function App() {
       })),
     );
     setSyncIndex(0);
+    setRecordingIndex(null);
     setSaveState('idle');
   };
 
@@ -365,6 +460,11 @@ function App() {
   };
 
   const loadProject = async (project: ProjectRecord) => {
+    audioRef.current?.pause();
+    setRecordingIndex(null);
+    setSyncIndex(0);
+    setCurrentTime(0);
+    setAudioFile(null);
     setActiveProjectId(project.id);
     setTitle(project.title);
     setArtist(project.artist ?? '');
@@ -429,6 +529,7 @@ function App() {
     setDuration(0);
     setCurrentTime(0);
     setSyncIndex(0);
+    setRecordingIndex(null);
     setSaveState('idle');
     setStatus('새 프로젝트');
   };
@@ -516,6 +617,7 @@ function App() {
           <div className="caption-stage">
             <div className="stage-meta">
               <span>{formatTime(currentTime)}</span>
+              {recordingIndex !== null && <span className="recording-label">기록 중 {recordingIndex + 1}/{cues.length}</span>}
               <span>{formatTime(duration)}</span>
             </div>
             <div className="caption-stack">
@@ -546,11 +648,12 @@ function App() {
               <FileAudio size={18} />
               오디오
             </button>
-            <button className="play-button" type="button" onClick={() => void togglePlay()} title="재생">
+            <button className="play-button" type="button" onClick={() => void togglePlay()} title={isPlaying ? '일시정지' : '재생'}>
               {isPlaying ? <Pause size={24} /> : <Play size={24} />}
             </button>
             <input
               className="time-slider"
+              aria-label="재생 위치"
               type="range"
               min="0"
               max={duration || 0}
@@ -562,6 +665,23 @@ function App() {
               <Mic2 size={18} />
               화면
             </button>
+          </div>
+
+          <div className="live-sync-controls">
+            <button className="gold-button" type="button" onClick={stampNext} disabled={!nextCue}>
+              <SkipForward size={18} />
+              싱크 찍기
+            </button>
+            {recordingIndex !== null && (
+              <button className="tool-button" type="button" onClick={finishCue}>
+                <Square size={16} />
+                싱크 종료
+              </button>
+            )}
+            <div className="sync-target">
+              <span>{nextCue ? `다음 자막 ${syncIndex + 1}/${cues.length}` : recordingIndex !== null ? '마지막 자막 기록 중' : '자막 없음'}</span>
+              <strong>{nextCue?.text ?? activeCue?.text ?? ''}</strong>
+            </div>
           </div>
 
           <audio ref={audioRef} src={audioUrl} preload="metadata" />
@@ -608,10 +728,6 @@ function App() {
           </label>
 
           <div className="sync-toolbar">
-            <button className="gold-button" type="button" onClick={stampNext}>
-              <ChevronRight size={18} />
-              다음 줄
-            </button>
             <button className="tool-button" type="button" onClick={finishCue}>
               <SkipForward size={18} />
               끝점
@@ -634,7 +750,7 @@ function App() {
           <div className="cue-list">
             {cues.map((cue, index) => (
               <article className={index === activeIndex ? 'cue-row active' : 'cue-row'} key={cue.id}>
-                <button className="cue-number" type="button" onClick={() => setSyncIndex(index)}>
+                <button className="cue-number" type="button" onClick={() => setSyncIndex(index)} title={`${index + 1}번 자막 싱크 선택`} aria-pressed={index === syncIndex}>
                   {index + 1}
                 </button>
                 <button className="cue-text" type="button" onClick={() => seekTo(cue.start)}>
@@ -660,7 +776,7 @@ function App() {
                     onChange={(event) => updateCue(index, { end: Number(event.target.value) })}
                   />
                 </label>
-                <button className="ghost-icon" type="button" onClick={() => stampCue(index)} title="현재 시간 입력">
+                <button className="ghost-icon" type="button" onClick={() => stampCue(index)} title="이 자막 싱크 찍기">
                   <UploadCloud size={16} />
                 </button>
               </article>

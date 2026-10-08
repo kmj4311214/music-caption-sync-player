@@ -207,6 +207,11 @@ h1 {
   font-weight: 800;
 }
 
+.recording-label {
+  color: var(--teal);
+  font-size: 0.8rem;
+}
+
 .caption-stack {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -272,12 +277,52 @@ h1 {
   background: var(--panel-strong);
 }
 
+.transport .tool-button,
+.transport .play-button,
+.live-sync-controls button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.live-sync-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sync-target {
+  flex: 1;
+  min-width: 160px;
+  max-width: 100%;
+}
+
+.sync-target span,
+.sync-target strong {
+  display: block;
+}
+
+.sync-target span {
+  margin-bottom: 4px;
+  color: var(--teal);
+  font-size: 0.74rem;
+}
+
+.sync-target strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--gold-soft);
+  font-size: 0.9rem;
+}
+
 .hidden-input {
   display: none;
 }
 
 .time-slider {
   width: 100%;
+  min-width: 0;
   accent-color: var(--gold);
 }
 
@@ -551,7 +596,7 @@ input {
 }
 
 .theater .caption-stage {
-  min-height: calc(100vh - 132px);
+  min-height: calc(100vh - 240px);
 }
 
 .theater .caption-stack h2 {
