@@ -29,7 +29,7 @@ type AudioUpload = {
 export async function ensureAudioStored(client: SupabaseClient, audio: AudioUpload) {
   const bucket = client.storage.from(AUDIO_BUCKET);
   if (audio.path) {
-    const { data, error } = await bucket.exists(audio.path);
+    const { data, error } = await bucket.info(audio.path);
     if (data) {
       return audio.path;
     }

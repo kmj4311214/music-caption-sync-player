@@ -31,6 +31,7 @@ export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl!, supabaseKey!, {
       global: {
+        fetch: (input, init) => fetch(input, { ...init, cache: 'no-store' }),
         headers: {
           'x-music-caption-owner': ownerKey,
         },

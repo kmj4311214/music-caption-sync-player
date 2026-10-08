@@ -3,12 +3,12 @@ import { Blob } from 'node:buffer';
 import test from 'node:test';
 import { AUDIO_BUCKET, MAX_AUDIO_BYTES, audioContentType, ensureAudioStored, errorMessage } from '../src/lib/projectStorage.ts';
 
-function fixture(exists = { data: true, error: null }, uploadError = null) {
+function fixture(info = { data: { size: 5 }, error: null }, uploadError = null) {
   const calls = [];
   const client = { storage: { from: bucket => {
     assert.equal(bucket, AUDIO_BUCKET);
     return {
-      exists: async path => { calls.push({ kind: 'exists', path }); return exists; },
+      info: async path => { calls.push({ kind: 'info', path }); return info; },
       upload: async (path, source, options) => {
         calls.push({ kind: 'upload', path, source, options });
         return { error: uploadError };
@@ -23,7 +23,7 @@ test('repeated section saves reuse an existing audio object', async () => {
   const { client, audio, calls } = fixture();
   assert.equal(await ensureAudioStored(client, audio), audio.path);
   assert.equal(await ensureAudioStored(client, audio), audio.path);
-  assert.ok(calls.every(c => c.kind === 'exists'));
+  assert.ok(calls.every(c => c.kind === 'info'));
 });
 
 test('saving after deletion restores the retained audio under a fresh path', async () => {
