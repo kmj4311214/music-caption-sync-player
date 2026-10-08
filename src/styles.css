@@ -180,6 +180,8 @@ h1 {
 
 .stage-column {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 14px;
 }
 
@@ -207,30 +209,47 @@ h1 {
 
 .caption-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: center;
   justify-items: center;
   gap: 18px;
+  min-width: 0;
   min-height: 312px;
   padding: 34px;
   text-align: center;
 }
 
 .caption-stack h2 {
-  max-width: 11ch;
+  min-height: 1.15em;
   margin: 0;
   color: #fff6df;
-  font-size: clamp(2rem, 5vw, 5.7rem);
-  line-height: 1.04;
+  font-size: 72px;
+  line-height: 1.15;
   letter-spacing: 0;
-  text-wrap: balance;
-  overflow-wrap: anywhere;
 }
 
 .caption-side {
   min-height: 1.3em;
   margin: 0;
   color: rgba(248, 236, 210, 0.46);
-  font-size: clamp(0.9rem, 1.6vw, 1.2rem);
+  font-size: 1.2rem;
+  line-height: 1.3;
+}
+
+.caption-stack h2,
+.caption-side {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.caption-text {
+  display: inline-block;
+  flex: none;
+  white-space: nowrap;
 }
 
 .progress-track {
@@ -536,8 +555,7 @@ input {
 }
 
 .theater .caption-stack h2 {
-  max-width: 14ch;
-  font-size: clamp(3rem, 8vw, 9rem);
+  font-size: 128px;
 }
 
 @media (max-width: 1180px) {

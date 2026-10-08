@@ -20,6 +20,7 @@ import {
   WandSparkles,
 } from 'lucide-react';
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AutoFitCaptionText } from './AutoFitCaptionText';
 import { AUDIO_BUCKET, isSupabaseConfigured, ownerKey, supabase } from './lib/supabase';
 import type { CaptionCue, ProjectRecord, SaveState } from './types';
 
@@ -518,9 +519,15 @@ function App() {
               <span>{formatTime(duration)}</span>
             </div>
             <div className="caption-stack">
-              <p className="caption-side">{cues[activeIndex - 1]?.text ?? ''}</p>
-              <h2>{activeCue?.text ?? '오디오와 자막을 준비하세요'}</h2>
-              <p className="caption-side">{cues[activeIndex + 1]?.text ?? ''}</p>
+              <p className="caption-side">
+                <AutoFitCaptionText text={cues[activeIndex - 1]?.text ?? ''} expanded={theater} />
+              </p>
+              <h2>
+                <AutoFitCaptionText text={activeCue?.text ?? '오디오와 자막을 준비하세요'} expanded={theater} />
+              </h2>
+              <p className="caption-side">
+                <AutoFitCaptionText text={cues[activeIndex + 1]?.text ?? ''} expanded={theater} />
+              </p>
             </div>
             <div className="progress-track" aria-hidden="true">
               <span style={{ width: `${progress}%` }} />
